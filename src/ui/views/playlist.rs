@@ -21,7 +21,7 @@ fn playlist_sidebar(state: &AppState) -> Element<'_, Message> {
                 .font(icons::NERD_FONT_MONO)
                 .color(theme::accent())
                 .size(13),
-            text(" Nova playlist")
+            text(state.strings.new_playlist)
                 .color(theme::accent())
                 .size(13),
         ]
@@ -68,7 +68,7 @@ fn playlist_sidebar(state: &AppState) -> Element<'_, Message> {
 
     container(
         column![
-            text("Playlists")
+            text(state.strings.sidebar_playlists)
                 .color(theme::subtext())
                 .size(11)
                 .font(crate::ui::icons::UI_FONT_BOLD),
@@ -92,7 +92,7 @@ fn playlist_tracks(state: &AppState) -> Element<'_, Message> {
 
     if tracks.is_empty() {
         return container(
-            text("Selecione uma playlist")
+            text(state.strings.select_playlist)
                 .color(theme::overlay0())
                 .size(15),
         )

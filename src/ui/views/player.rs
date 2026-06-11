@@ -26,7 +26,7 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
         .into()
     } else {
         column![
-            text("Nenhuma faixa").color(theme::overlay0()).size(16),
+            text(state.strings.no_track).color(theme::overlay0()).size(16),
         ]
         .into()
     };

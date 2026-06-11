@@ -115,20 +115,20 @@ fn read_tags(path: &Path) -> Result<TrackInfo> {
         .unwrap_or_else(|| {
             path.file_stem()
                 .and_then(|s| s.to_str())
-                .unwrap_or("Desconhecido")
+                .unwrap_or(crate::locale::get().unknown)
                 .to_string()
         });
 
     let folder_album = path.parent()
         .and_then(|p| p.file_name())
         .and_then(|n| n.to_str())
-        .unwrap_or("Desconhecido")
+        .unwrap_or(crate::locale::get().unknown)
         .to_string();
     let folder_artist = path.parent()
         .and_then(|p| p.parent())
         .and_then(|p| p.file_name())
         .and_then(|n| n.to_str())
-        .unwrap_or("Desconhecido")
+        .unwrap_or(crate::locale::get().unknown)
         .to_string();
 
     let artist = tags

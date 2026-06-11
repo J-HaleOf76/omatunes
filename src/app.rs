@@ -80,6 +80,8 @@ pub struct AppState {
     pub iced_theme: iced::Theme,
     loaded_theme_name: String,
 
+    pub strings: &'static crate::locale::Strings,
+
     audio: AudioPlayer,
     db: Database,
 
@@ -105,6 +107,7 @@ impl AppState {
 
         let loaded_theme_name = theme::read_current_theme_name();
         let iced_theme = build_iced_theme();
+        let strings = crate::locale::get();
 
         let state = AppState {
             tab: Tab::Library,
@@ -125,6 +128,7 @@ impl AppState {
             playlist_tracks: Vec::new(),
             iced_theme,
             loaded_theme_name,
+            strings,
             audio,
             db,
             mpris_cmd_rx,
@@ -463,8 +467,8 @@ impl AppState {
                 .size(16)
                 .font(crate::ui::icons::UI_FONT_BOLD),
             Space::with_width(24),
-            tab_btn("Biblioteca", Tab::Library),
-            tab_btn("Playlists", Tab::Playlists),
+            tab_btn(self.strings.tab_library, Tab::Library),
+            tab_btn(self.strings.tab_playlists, Tab::Playlists),
         ]
         .align_y(Alignment::Center)
         .spacing(0);

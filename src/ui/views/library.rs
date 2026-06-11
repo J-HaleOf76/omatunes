@@ -50,7 +50,7 @@ fn folder_sidebar(state: &AppState) -> Element<'_, Message> {
 
     container(
         column![
-            text("Pastas")
+            text(state.strings.sidebar_folders)
                 .color(theme::subtext())
                 .size(11)
                 .font(crate::ui::icons::UI_FONT_BOLD),
@@ -69,9 +69,9 @@ fn track_list_view(state: &AppState) -> Element<'_, Message> {
     if state.tracks.is_empty() {
         return container(
             text(if state.selected_folder.is_some() {
-                "Nenhuma faixa encontrada"
+                state.strings.no_tracks_found
             } else {
-                "Selecione uma pasta"
+                state.strings.select_folder
             })
             .color(theme::overlay0())
             .size(15),
@@ -108,7 +108,7 @@ fn track_list_view(state: &AppState) -> Element<'_, Message> {
                     .size(13)
                     .font(crate::ui::icons::UI_FONT_BOLD),
                 Space::with_width(Length::Fill),
-                text(format!("{n} faixa{}", if n == 1 { "" } else { "s" }))
+                text(state.strings.track_count(n))
                     .color(theme::overlay0())
                     .size(11),
             ]
