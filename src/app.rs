@@ -46,6 +46,8 @@ pub enum Message {
     // Playlists
     CreatePlaylist,
     DeletePlaylist(i64),
+    CopyCurrentTrack,
+    PasteToPlaylist,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -75,6 +77,7 @@ pub struct AppState {
     pub playlists: Vec<Playlist>,
     pub selected_playlist: Option<i64>,
     pub playlist_tracks: Vec<Track>,
+    pub clipboard_track: Option<Track>,
 
     // Tema do iced reconstruído quando o Omarchy muda de tema
     pub iced_theme: iced::Theme,
@@ -128,6 +131,7 @@ impl AppState {
             playlists,
             selected_playlist: None,
             playlist_tracks: Vec::new(),
+            clipboard_track: None,
             iced_theme,
             loaded_theme_name,
             strings,
@@ -376,6 +380,23 @@ impl AppState {
                 Task::none()
             }
 
+            Message::CopyCurrentTrack => {
+                self.clipboard_track = self.current_track.clone();
+                Task::none()
+            }
+
+            Message::PasteToPlaylist => {
+                if let (Some(track), Some(playlist_id)) =
+                    (self.clipboard_track.clone(), self.selected_playlist)
+                {
+                    self.db.add_track_to_playlist(playlist_id, track.id).ok();
+                    self.playlist_tracks =
+                        self.db.playlist_tracks(playlist_id).unwrap_or_default();
+                    self.playlists = self.db.all_playlists().unwrap_or_default();
+                }
+                Task::none()
+            }
+
             Message::CreatePlaylist => {
                 let name = format!("Playlist {}", self.playlists.len() + 1);
                 self.db.create_playlist(&name).ok();
@@ -423,12 +444,19 @@ impl AppState {
         Subscription::batch([
             iced::time::every(Duration::from_millis(100)).map(|_| Message::PollAudio),
             iced::time::every(Duration::from_secs(3)).map(|_| Message::CheckTheme),
-            iced::keyboard::on_key_press(|key, _mods| {
+            iced::keyboard::on_key_press(|key, mods| {
                 use iced::keyboard::Key;
                 use iced::keyboard::key::Named;
                 let seek = crate::config::get().seek_step as i64;
                 let vol  = crate::config::get().volume_step;
                 match key {
+                    // Ctrl+C / Ctrl+V — clipboard de faixas para playlists
+                    Key::Character(ref c) if mods.control() => match c.as_str() {
+                        "c" => Some(Message::CopyCurrentTrack),
+                        "v" => Some(Message::PasteToPlaylist),
+                        _ => None,
+                    },
+                    // Controles sem modificador
                     Key::Named(Named::Space)      => Some(Message::PlayPause),
                     Key::Named(Named::ArrowRight) => Some(Message::SeekRelative(seek)),
                     Key::Named(Named::ArrowLeft)  => Some(Message::SeekRelative(-seek)),

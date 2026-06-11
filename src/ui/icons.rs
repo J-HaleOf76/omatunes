@@ -41,3 +41,4 @@ pub const ICON_LIST:     &str = "\u{f0ca}";  //
 pub const ICON_HEART:    &str = "\u{f004}";  //
 pub const ICON_PLUS:     &str = "\u{f067}";  //
 pub const ICON_TRASH:    &str = "\u{f1f8}";  //
+pub const ICON_COPY:     &str = "\u{f0c5}";  //

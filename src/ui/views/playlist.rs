@@ -8,10 +8,44 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
     let sidebar = playlist_sidebar(state);
     let track_list = playlist_tracks(state);
 
-    row![sidebar, track_list]
+    let content = column![
+        clipboard_bar(state),
+        row![sidebar, track_list]
+            .width(Length::Fill)
+            .height(Length::Fill),
+    ]
+    .width(Length::Fill)
+    .height(Length::Fill);
+
+    content.into()
+}
+
+fn clipboard_bar(state: &AppState) -> Element<'_, Message> {
+    if let Some(track) = &state.clipboard_track {
+        container(
+            row![
+                text(crate::ui::icons::ICON_COPY)
+                    .font(icons::NERD_FONT_MONO)
+                    .color(theme::accent())
+                    .size(13),
+                Space::with_width(8),
+                text(format!("{} — {}", track.title, track.artist))
+                    .color(theme::subtext())
+                    .size(13),
+                Space::with_width(8),
+                text("Ctrl+V para colar na playlist selecionada")
+                    .color(theme::overlay0())
+                    .size(11),
+            ]
+            .align_y(Alignment::Center)
+            .padding([4, 12]),
+        )
+        .style(theme::album_header)
         .width(Length::Fill)
-        .height(Length::Fill)
         .into()
+    } else {
+        Space::with_height(0).into()
+    }
 }
 
 fn playlist_sidebar(state: &AppState) -> Element<'_, Message> {
