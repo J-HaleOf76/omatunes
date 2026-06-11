@@ -32,6 +32,8 @@ pub enum Message {
 
     // Poll periódico do canal de eventos de áudio e MPRIS
     PollAudio,
+    // Verificação periódica de mudança de tema
+    CheckTheme,
 
     // Biblioteca
     LibraryScanned(usize),
@@ -69,6 +71,10 @@ pub struct AppState {
     pub selected_playlist: Option<i64>,
     pub playlist_tracks: Vec<Track>,
 
+    // Tema do iced reconstruído quando o Omarchy muda de tema
+    pub iced_theme: iced::Theme,
+    loaded_theme_name: String,
+
     audio: AudioPlayer,
     db: Database,
 
@@ -92,6 +98,9 @@ impl AppState {
         let (mpris_update_tx, mpris_update_rx) = tokio::sync::mpsc::unbounded_channel();
         mpris::launch(mpris_cmd_tx, mpris_update_rx);
 
+        let loaded_theme_name = theme::read_current_theme_name();
+        let iced_theme = build_iced_theme();
+
         let state = AppState {
             tab: Tab::Library,
             playback_state: PlaybackState::Stopped,
@@ -109,6 +118,8 @@ impl AppState {
             playlists,
             selected_playlist: None,
             playlist_tracks: Vec::new(),
+            iced_theme,
+            loaded_theme_name,
             audio,
             db,
             mpris_cmd_rx,
@@ -317,6 +328,17 @@ impl AppState {
                 Task::none()
             }
 
+            Message::CheckTheme => {
+                let current = theme::read_current_theme_name();
+                if !current.is_empty() && current != self.loaded_theme_name {
+                    theme::reload_system_theme();
+                    self.iced_theme = build_iced_theme();
+                    self.loaded_theme_name = current;
+                    eprintln!("lavanda: tema atualizado para \"{}\"", self.loaded_theme_name);
+                }
+                Task::none()
+            }
+
             Message::LibraryScanned(count) => {
                 eprintln!("Biblioteca: {count} faixas indexadas");
                 self.folders = music_subfolders(&home_music_dir());
@@ -368,7 +390,10 @@ impl AppState {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        iced::time::every(Duration::from_millis(100)).map(|_| Message::PollAudio)
+        Subscription::batch([
+            iced::time::every(Duration::from_millis(100)).map(|_| Message::PollAudio),
+            iced::time::every(Duration::from_secs(3)).map(|_| Message::CheckTheme),
+        ])
     }
 
     fn header_view(&self) -> Element<'_, Message> {
@@ -472,6 +497,19 @@ fn home_music_dir() -> PathBuf {
     PathBuf::from(home).join("Music")
 }
 
+fn build_iced_theme() -> Theme {
+    Theme::custom(
+        "Omarchy".into(),
+        iced::theme::Palette {
+            background: theme::base(),
+            text:       theme::text(),
+            primary:    theme::accent(),
+            success:    theme::green(),
+            danger:     theme::red(),
+        },
+    )
+}
+
 // ── Ponto de entrada iced ─────────────────────────────────────────────────────
 
 pub fn run() -> iced::Result {
@@ -483,18 +521,7 @@ pub fn run() -> iced::Result {
             stretch: iced::font::Stretch::Normal,
             style: iced::font::Style::Normal,
         })
-        .theme(|_| {
-            Theme::custom(
-                "Omarchy".into(),
-                iced::theme::Palette {
-                    background: theme::base(),
-                    text: theme::text(),
-                    primary: theme::accent(),
-                    success: theme::green(),
-                    danger: theme::red(),
-                },
-            )
-        })
+        .theme(|state: &AppState| state.iced_theme.clone())
         .window(iced::window::Settings {
             size: iced::Size::new(960.0, 640.0),
             min_size: Some(iced::Size::new(700.0, 480.0)),
