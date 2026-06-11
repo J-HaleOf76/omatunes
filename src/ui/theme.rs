@@ -210,7 +210,7 @@ pub fn lerp_color(a: Color, b: Color, t: f32) -> Color {
 pub fn card(_: &iced::Theme) -> container::Style {
     container::Style {
         background: Some(iced::Background::Color(mantle())),
-        border: Border { color: surface0(), width: 1.0, radius: 12.0.into() },
+        border: Border { color: surface0(), width: 1.0, radius: 0.0.into() },
         ..Default::default()
     }
 }
@@ -233,7 +233,7 @@ pub fn sidebar(_: &iced::Theme) -> container::Style {
 pub fn selected_row(_: &iced::Theme) -> container::Style {
     container::Style {
         background: Some(iced::Background::Color(with_alpha(accent(), 0.15))),
-        border: Border { color: with_alpha(accent(), 0.4), width: 1.0, radius: 6.0.into() },
+        border: Border { color: with_alpha(accent(), 0.4), width: 1.0, radius: 0.0.into() },
         ..Default::default()
     }
 }
@@ -241,7 +241,7 @@ pub fn selected_row(_: &iced::Theme) -> container::Style {
 pub fn player_panel(_: &iced::Theme) -> container::Style {
     container::Style {
         background: Some(iced::Background::Color(mantle())),
-        border: Border { color: surface0(), width: 1.0, radius: 12.0.into() },
+        border: Border { color: surface0(), width: 1.0, radius: 0.0.into() },
         ..Default::default()
     }
 }
@@ -249,7 +249,7 @@ pub fn player_panel(_: &iced::Theme) -> container::Style {
 pub fn album_header(_: &iced::Theme) -> container::Style {
     container::Style {
         background: Some(iced::Background::Color(with_alpha(surface0(), 0.5))),
-        border: Border { color: with_alpha(accent(), 0.2), width: 0.0, radius: 4.0.into() },
+        border: Border { color: with_alpha(accent(), 0.2), width: 0.0, radius: 0.0.into() },
         ..Default::default()
     }
 }
