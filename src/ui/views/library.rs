@@ -86,20 +86,20 @@ fn track_list_view(state: &AppState) -> Element<'_, Message> {
     let current_id = state.current_track.as_ref().map(|t| t.id);
 
     // Agrupa faixas por álbum mantendo a ordem de inserção
-    let mut groups: Vec<(String, i64, Vec<&crate::library::models::Track>)> = Vec::new();
+    let mut groups: Vec<(String, Vec<&crate::library::models::Track>)> = Vec::new();
     for track in &state.tracks {
         if let Some(last) = groups.last_mut() {
-            if last.1 == track.album_id {
-                last.2.push(track);
+            if last.0 == track.album {
+                last.1.push(track);
                 continue;
             }
         }
-        groups.push((track.album.clone(), track.album_id, vec![track]));
+        groups.push((track.album.clone(), vec![track]));
     }
 
     let mut rows: Vec<Element<Message>> = Vec::new();
 
-    for (album_name, _album_id, tracks) in groups.into_iter() {
+    for (album_name, tracks) in groups.into_iter() {
         let n = tracks.len();
         let header = container(
             row![

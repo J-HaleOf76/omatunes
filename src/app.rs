@@ -1,14 +1,14 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use iced::widget::{button, column, container, row, text, Space};
+use iced::widget::{container, column, row, text, Space};
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use mpris_server::{LoopStatus, PlaybackStatus};
 
 use crate::audio::{AudioCommand, AudioEvent, AudioPlayer, MprisCommand, MprisUpdate, PlaybackState};
 use crate::audio::mpris;
-use crate::library::models::{Playlist, Track};
-use crate::library::{scan_directory, scan_file, Store};
+use crate::library::models::Track;
+use crate::library::{scan_directory, Store};
 use crate::ui::{theme, views};
 
 // ── Mensagens ─────────────────────────────────────────────────────────────────
@@ -16,9 +16,7 @@ use crate::ui::{theme, views};
 #[derive(Debug, Clone)]
 pub enum Message {
     // Navegação
-    SwitchTab(Tab),
     SelectFolder(PathBuf),
-    SelectPlaylist(i64),
 
     // Controles de playback
     PlayTrack(Track),
@@ -29,43 +27,21 @@ pub enum Message {
     VolumeChanged(f32),
     ToggleShuffle,
     ToggleRepeat,
-
-    // Seek relativo em segundos (positivo = avança, negativo = volta)
     SeekRelative(i64),
-    // Ajuste de volume em delta (ex: +0.05 ou -0.05)
     VolumeStep(f32),
 
-    // Poll periódico do canal de eventos de áudio e MPRIS
+    // Internos
     PollAudio,
-    // Verificação periódica de mudança de tema
     CheckTheme,
-
-    // Biblioteca
     LibraryScanned(usize),
-
-    // Playlists
-    CreatePlaylist,
-    DeletePlaylist(i64),
-    CopyCurrentTrack,
-    PasteToPlaylist,
-    // Paths resolvidos do clipboard do Wayland (pode ser vazio)
-    ClipboardPaste(Vec<std::path::PathBuf>),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Tab {
-    Library,
-    Playlists,
 }
 
 // ── Estado global ─────────────────────────────────────────────────────────────
 
 pub struct AppState {
-    pub tab: Tab,
     pub playback_state: PlaybackState,
     pub current_track: Option<Track>,
     pub queue: Vec<Track>,
-    pub queue_index: usize,
     pub position: Duration,
     pub duration: Duration,
     pub volume: f32,
@@ -76,12 +52,6 @@ pub struct AppState {
     pub selected_folder: Option<PathBuf>,
     pub tracks: Vec<Track>,
 
-    pub playlists: Vec<Playlist>,
-    pub selected_playlist: Option<i64>,
-    pub playlist_tracks: Vec<Track>,
-    pub clipboard_track: Option<Track>,
-
-    // Tema do iced reconstruído quando o Omarchy muda de tema
     pub iced_theme: iced::Theme,
     loaded_theme_name: String,
 
@@ -104,22 +74,19 @@ impl AppState {
         let cfg = crate::config::get();
         let music_dir = cfg.music_path();
         let folders = music_subfolders(&music_dir);
-        let playlists = db.all_playlists().unwrap_or_default();
 
         let (mpris_cmd_tx, mpris_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
         let (mpris_update_tx, mpris_update_rx) = tokio::sync::mpsc::unbounded_channel();
         mpris::launch(mpris_cmd_tx, mpris_update_rx);
 
-        let loaded_theme_name = theme::read_current_theme_name();
+        let loaded_theme_name = crate::ui::theme::read_current_theme_name();
         let iced_theme = build_iced_theme();
         let strings = crate::locale::get();
 
         let state = AppState {
-            tab: Tab::Library,
             playback_state: PlaybackState::Stopped,
             current_track: None,
             queue: Vec::new(),
-            queue_index: 0,
             position: Duration::ZERO,
             duration: Duration::ZERO,
             volume: cfg.volume.clamp(0.0, 1.0),
@@ -128,10 +95,6 @@ impl AppState {
             folders,
             selected_folder: None,
             tracks: Vec::new(),
-            playlists,
-            selected_playlist: None,
-            playlist_tracks: Vec::new(),
-            clipboard_track: None,
             iced_theme,
             loaded_theme_name,
             strings,
@@ -174,11 +137,6 @@ impl AppState {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::SwitchTab(tab) => {
-                self.tab = tab;
-                Task::none()
-            }
-
             Message::SelectFolder(path) => {
                 self.selected_folder = Some(path.clone());
                 self.tracks = self.db
@@ -187,22 +145,12 @@ impl AppState {
                 Task::none()
             }
 
-            Message::SelectPlaylist(id) => {
-                self.selected_playlist = Some(id);
-                self.playlist_tracks = self.db.playlist_tracks(id).unwrap_or_default();
-                Task::none()
-            }
-
             Message::PlayTrack(track) => {
                 let cover_data = self.db.load_cover_for_path(&track.path.to_string_lossy());
                 let track = Track { cover_data, ..track };
                 self.audio.send(AudioCommand::Play(track.path.clone()));
                 self.audio.send(AudioCommand::SetVolume(self.volume));
-                self.queue = if self.tab == Tab::Playlists {
-                    self.playlist_tracks.clone()
-                } else {
-                    self.tracks.clone()
-                };
+                self.queue = self.tracks.clone();
                 self.current_track = Some(track);
                 self.playback_state = PlaybackState::Playing;
                 self.position = Duration::ZERO;
@@ -238,15 +186,8 @@ impl AppState {
                 Task::none()
             }
 
-            Message::NextTrack => {
-                self.advance_track(1);
-                Task::none()
-            }
-
-            Message::PreviousTrack => {
-                self.advance_track(-1);
-                Task::none()
-            }
+            Message::NextTrack => { self.advance_track(1); Task::none() }
+            Message::PreviousTrack => { self.advance_track(-1); Task::none() }
 
             Message::Seek(dur) => {
                 self.audio.send(AudioCommand::Seek(dur));
@@ -294,7 +235,6 @@ impl AppState {
             }
 
             Message::PollAudio => {
-                // Drena eventos de áudio
                 while let Ok(event) = self.audio.event_rx.try_recv() {
                     match event {
                         AudioEvent::Progress { position, duration } => {
@@ -326,7 +266,6 @@ impl AppState {
                     }
                 }
 
-                // Drena comandos MPRIS vindos do D-Bus (Waybar, etc.)
                 while let Ok(cmd) = self.mpris_cmd_rx.try_recv() {
                     match cmd {
                         MprisCommand::Play => {
@@ -372,12 +311,11 @@ impl AppState {
             }
 
             Message::CheckTheme => {
-                let current = theme::read_current_theme_name();
+                let current = crate::ui::theme::read_current_theme_name();
                 if !current.is_empty() && current != self.loaded_theme_name {
-                    theme::reload_system_theme();
+                    crate::ui::theme::reload_system_theme();
                     self.iced_theme = build_iced_theme();
                     self.loaded_theme_name = current;
-                    eprintln!("lavanda: tema atualizado para \"{}\"", self.loaded_theme_name);
                 }
                 Task::none()
             }
@@ -386,63 +324,6 @@ impl AppState {
                 eprintln!("Biblioteca: {count} faixas indexadas");
                 self.db.reload_library().ok();
                 self.folders = music_subfolders(&crate::config::get().music_path());
-                self.playlists = self.db.all_playlists().unwrap_or_default();
-                Task::none()
-            }
-
-            Message::CopyCurrentTrack => {
-                self.clipboard_track = self.current_track.clone();
-                Task::none()
-            }
-
-            Message::PasteToPlaylist => {
-                // Tenta ler URIs do clipboard do Wayland; se não houver, usa clipboard interno
-                Task::perform(read_clipboard_uris(), Message::ClipboardPaste)
-            }
-
-            Message::ClipboardPaste(paths) => {
-                let Some(playlist_id) = self.selected_playlist else {
-                    return Task::none();
-                };
-
-                if paths.is_empty() {
-                    // Fallback: clipboard interno (faixa copiada com Ctrl+C no lavanda)
-                    if let Some(track) = &self.clipboard_track {
-                        self.db.add_track_to_playlist(playlist_id, track.id).ok();
-                    }
-                } else {
-                    // Arquivos vindos do file manager — indexa na hora se necessário
-                    for path in &paths {
-                        let path_str = path.to_string_lossy();
-                        let id = self.db.track_id_by_path(&path_str).or_else(|| {
-                            scan_file(&mut self.db, path).ok()?;
-                            self.db.track_id_by_path(&path_str)
-                        });
-                        if let Some(id) = id {
-                            self.db.add_track_to_playlist(playlist_id, id).ok();
-                        }
-                    }
-                }
-
-                self.playlist_tracks = self.db.playlist_tracks(playlist_id).unwrap_or_default();
-                self.playlists = self.db.all_playlists().unwrap_or_default();
-                Task::none()
-            }
-
-            Message::CreatePlaylist => {
-                let name = format!("Playlist {}", self.playlists.len() + 1);
-                self.db.create_playlist(&name).ok();
-                self.playlists = self.db.all_playlists().unwrap_or_default();
-                Task::none()
-            }
-
-            Message::DeletePlaylist(id) => {
-                self.db.delete_playlist(id).ok();
-                self.playlists = self.db.all_playlists().unwrap_or_default();
-                if self.selected_playlist == Some(id) {
-                    self.selected_playlist = None;
-                    self.playlist_tracks.clear();
-                }
                 Task::none()
             }
         }
@@ -451,11 +332,7 @@ impl AppState {
     fn view(&self) -> Element<'_, Message> {
         let header = self.header_view();
         let player_panel = views::player::view(self);
-
-        let content = match self.tab {
-            Tab::Library => views::library::view(self),
-            Tab::Playlists => views::playlist::view(self),
-        };
+        let content = views::library::view(self);
 
         let main = column![header, player_panel, content]
             .spacing(0)
@@ -476,19 +353,12 @@ impl AppState {
         Subscription::batch([
             iced::time::every(Duration::from_millis(100)).map(|_| Message::PollAudio),
             iced::time::every(Duration::from_secs(3)).map(|_| Message::CheckTheme),
-            iced::keyboard::on_key_press(|key, mods| {
+            iced::keyboard::on_key_press(|key, _mods| {
                 use iced::keyboard::Key;
                 use iced::keyboard::key::Named;
                 let seek = crate::config::get().seek_step as i64;
                 let vol  = crate::config::get().volume_step;
                 match key {
-                    // Ctrl+C / Ctrl+V — clipboard de faixas para playlists
-                    Key::Character(ref c) if mods.control() => match c.as_str() {
-                        "c" => Some(Message::CopyCurrentTrack),
-                        "v" => Some(Message::PasteToPlaylist),
-                        _ => None,
-                    },
-                    // Controles sem modificador
                     Key::Named(Named::Space)      => Some(Message::PlayPause),
                     Key::Named(Named::ArrowRight) => Some(Message::SeekRelative(seek)),
                     Key::Named(Named::ArrowLeft)  => Some(Message::SeekRelative(-seek)),
@@ -508,31 +378,16 @@ impl AppState {
     }
 
     fn header_view(&self) -> Element<'_, Message> {
-        let tab_btn = |label: &'static str, tab: Tab| {
-            let is_active = self.tab == tab;
-            let color = if is_active { theme::accent() } else { theme::subtext() };
-            button(
-                text(label).color(color).size(14).font(
-                    if is_active { crate::ui::icons::UI_FONT_BOLD } else { crate::ui::icons::UI_FONT }
-                ),
-            )
-            .on_press(Message::SwitchTab(tab))
-            .style(iced::widget::button::text)
-            .padding([8, 16])
-        };
-
         let nav = row![
             text(crate::ui::icons::ICON_MUSIC)
                 .font(crate::ui::icons::NERD_FONT_MONO)
                 .color(theme::accent())
                 .size(16),
-            text(" lavanda")
+            Space::with_width(6),
+            text("lavanda")
                 .color(theme::accent())
                 .size(16)
                 .font(crate::ui::icons::UI_FONT_BOLD),
-            Space::with_width(24),
-            tab_btn(self.strings.tab_library, Tab::Library),
-            tab_btn(self.strings.tab_playlists, Tab::Playlists),
         ]
         .align_y(Alignment::Center)
         .spacing(0);
@@ -540,7 +395,7 @@ impl AppState {
         container(nav)
             .style(theme::header)
             .width(Length::Fill)
-            .padding([0, 12])
+            .padding([0, 16])
             .into()
     }
 
@@ -588,6 +443,8 @@ impl AppState {
     }
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
 fn music_subfolders(music_dir: &PathBuf) -> Vec<PathBuf> {
     let mut folders: Vec<PathBuf> = std::fs::read_dir(music_dir)
         .into_iter()
@@ -610,51 +467,6 @@ fn cache_dir() -> PathBuf {
     let xdg = std::env::var("XDG_CACHE_HOME")
         .unwrap_or_else(|_| format!("{}/.cache", std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())));
     PathBuf::from(xdg).join("lavanda")
-}
-
-/// Lê o clipboard do Wayland via `wl-paste` e retorna os caminhos de arquivo.
-/// Retorna Vec vazio se não houver URIs de arquivo ou `wl-paste` não estiver disponível.
-async fn read_clipboard_uris() -> Vec<std::path::PathBuf> {
-    let Ok(out) = tokio::process::Command::new("wl-paste")
-        .args(["--type", "text/uri-list"])
-        .output()
-        .await
-    else {
-        return Vec::new();
-    };
-
-    if !out.status.success() {
-        return Vec::new();
-    }
-
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter(|l| l.starts_with("file://"))
-        .filter_map(|l| {
-            let decoded = percent_decode(l.trim_start_matches("file://"));
-            Some(std::path::PathBuf::from(decoded))
-        })
-        .collect()
-}
-
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(s.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
-                if let Ok(b) = u8::from_str_radix(hex, 16) {
-                    out.push(b);
-                    i += 3;
-                    continue;
-                }
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn build_iced_theme() -> Theme {

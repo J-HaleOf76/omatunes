@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use super::models::{Playlist, Track};
+use super::models::Track;
 
 // ── Formatos JSON persistidos ──────────────────────────────────────────────────
 
@@ -31,12 +31,6 @@ struct TrackJson {
     cover: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
-struct PlaylistJson {
-    name: String,
-    tracks: Vec<String>, // paths absolutos, em ordem
-}
-
 // ── Tipos internos ─────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -45,25 +39,16 @@ struct TrackRecord {
     json: TrackJson,
 }
 
-struct PlaylistRecord {
-    id: i64,
-    name: String,
-    tracks: Vec<String>,
-}
-
 // ── Store ──────────────────────────────────────────────────────────────────────
 
 pub struct Store {
     library_path: PathBuf,
-    playlists_dir: PathBuf,
     covers_dir: PathBuf,
 
     tracks: Vec<TrackRecord>,
     by_path: HashMap<String, usize>,
 
-    playlists: Vec<PlaylistRecord>,
     next_track_id: i64,
-    next_playlist_id: i64,
 }
 
 impl Store {
@@ -72,14 +57,12 @@ impl Store {
     /// - `cache_dir`  → ~/.cache/lavanda/    (library.json, covers/)
     pub fn open(config_dir: &Path, cache_dir: &Path) -> Result<Self> {
         let library_path = cache_dir.join("library.json");
-        let playlists_dir = config_dir.join("playlists");
         let covers_dir = cache_dir.join("covers");
 
         std::fs::create_dir_all(cache_dir)?;
-        std::fs::create_dir_all(&playlists_dir)?;
         std::fs::create_dir_all(&covers_dir)?;
+        let _ = config_dir; // reservado para config futura
 
-        // ── Carrega biblioteca ─────────────────────────────────────────────────
         let raw_tracks = if library_path.exists() {
             let data = std::fs::read_to_string(&library_path)?;
             serde_json::from_str::<LibraryJson>(&data).unwrap_or_default().tracks
@@ -95,39 +78,7 @@ impl Store {
         }
         let next_track_id = tracks.len() as i64 + 1;
 
-        // ── Carrega playlists ──────────────────────────────────────────────────
-        let mut files: Vec<_> = std::fs::read_dir(&playlists_dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|e| e.path().extension().map_or(false, |x| x == "json"))
-            .collect();
-        files.sort_by_key(|e| e.file_name());
-
-        let mut playlists: Vec<PlaylistRecord> = Vec::new();
-        for (i, entry) in files.iter().enumerate() {
-            if let Ok(data) = std::fs::read_to_string(entry.path()) {
-                if let Ok(pl) = serde_json::from_str::<PlaylistJson>(&data) {
-                    playlists.push(PlaylistRecord {
-                        id: (i as i64) + 1,
-                        name: pl.name,
-                        tracks: pl.tracks,
-                    });
-                }
-            }
-        }
-        let next_playlist_id = playlists.len() as i64 + 1;
-
-        Ok(Store {
-            library_path,
-            playlists_dir,
-            covers_dir,
-            tracks,
-            by_path,
-            playlists,
-            next_track_id,
-            next_playlist_id,
-        })
+        Ok(Store { library_path, covers_dir, tracks, by_path, next_track_id })
     }
 
     /// Persiste library.json. Chamado explicitamente pelo scanner ao término do scan.
@@ -285,78 +236,6 @@ impl Store {
         Ok(records.iter().map(|r| self.build_track(r)).collect())
     }
 
-    // ── API de playlists ───────────────────────────────────────────────────────
-
-    pub fn all_playlists(&self) -> Result<Vec<Playlist>> {
-        Ok(self.playlists.iter().map(|pl| Playlist {
-            id: pl.id,
-            name: pl.name.clone(),
-            track_count: pl.tracks.len(),
-        }).collect())
-    }
-
-    pub fn create_playlist(&mut self, name: &str) -> Result<i64> {
-        let id = self.next_playlist_id;
-        self.next_playlist_id += 1;
-        let pl = PlaylistRecord { id, name: name.to_string(), tracks: Vec::new() };
-        self.save_playlist(&pl)?;
-        self.playlists.push(pl);
-        Ok(id)
-    }
-
-    pub fn delete_playlist(&mut self, playlist_id: i64) -> Result<()> {
-        if let Some(pos) = self.playlists.iter().position(|p| p.id == playlist_id) {
-            let pl = self.playlists.remove(pos);
-            let _ = std::fs::remove_file(self.playlist_path(&pl.name));
-            // reassigna IDs para manter sequência
-            for (i, p) in self.playlists.iter_mut().enumerate() {
-                p.id = (i as i64) + 1;
-            }
-            self.next_playlist_id = self.playlists.len() as i64 + 1;
-        }
-        Ok(())
-    }
-
-    pub fn playlist_tracks(&self, playlist_id: i64) -> Result<Vec<Track>> {
-        let Some(pl) = self.playlists.iter().find(|p| p.id == playlist_id) else {
-            return Ok(Vec::new());
-        };
-        Ok(pl.tracks.iter()
-            .filter_map(|path| {
-                let idx = *self.by_path.get(path.as_str())?;
-                Some(self.build_track(&self.tracks[idx]))
-            })
-            .collect())
-    }
-
-    pub fn add_track_to_playlist(&mut self, playlist_id: i64, track_id: i64) -> Result<()> {
-        let path = match self.tracks.iter().find(|r| r.id == track_id) {
-            Some(r) => r.json.path.clone(),
-            None => return Ok(()),
-        };
-        let Some(pos) = self.playlists.iter().position(|p| p.id == playlist_id) else {
-            return Ok(());
-        };
-        if self.playlists[pos].tracks.contains(&path) {
-            return Ok(());
-        }
-        self.playlists[pos].tracks.push(path);
-        // borrow posicional: sem iter_mut ativo, save_playlist pode emprestar &self
-        let pl = &self.playlists[pos];
-        self.save_playlist(pl)?;
-        Ok(())
-    }
-
-    fn playlist_path(&self, name: &str) -> PathBuf {
-        self.playlists_dir.join(format!("{}.json", sanitize_filename(name)))
-    }
-
-    fn save_playlist(&self, pl: &PlaylistRecord) -> Result<()> {
-        let pj = PlaylistJson { name: pl.name.clone(), tracks: pl.tracks.clone() };
-        let json = serde_json::to_string_pretty(&pj)?;
-        std::fs::write(self.playlist_path(&pl.name), json)?;
-        Ok(())
-    }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -365,13 +244,4 @@ fn fnv1a(data: &[u8]) -> u64 {
     const OFFSET: u64 = 0xcbf29ce484222325;
     const PRIME: u64 = 0x100000001b3;
     data.iter().fold(OFFSET, |h, &b| (h ^ b as u64).wrapping_mul(PRIME))
-}
-
-fn sanitize_filename(name: &str) -> String {
-    name.chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
-            _ => c,
-        })
-        .collect()
 }
