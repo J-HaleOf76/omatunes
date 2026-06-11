@@ -35,10 +35,9 @@ image = "0.25"
 thiserror = "2"
 anyhow = "1"
 
-# Configuração e persistência
+# Configuração
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 
 # Traits async
 async-trait = "0.1"

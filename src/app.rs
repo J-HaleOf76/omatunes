@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -8,17 +9,16 @@ use mpris_server::{LoopStatus, PlaybackStatus};
 use crate::audio::{AudioCommand, AudioEvent, AudioPlayer, MprisCommand, MprisUpdate, PlaybackState};
 use crate::audio::mpris;
 use crate::library::models::Track;
-use crate::library::{scan_directory, Store};
+use crate::library::{load_cover, scan_folder};
 use crate::ui::{theme, views};
 
 // ── Mensagens ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    // Navegação
     SelectFolder(PathBuf),
+    FolderScanned(PathBuf, Vec<Track>),
 
-    // Controles de playback
     PlayTrack(Track),
     PlayPause,
     NextTrack,
@@ -30,10 +30,8 @@ pub enum Message {
     SeekRelative(i64),
     VolumeStep(f32),
 
-    // Internos
     PollAudio,
     CheckTheme,
-    LibraryScanned(usize),
 }
 
 // ── Estado global ─────────────────────────────────────────────────────────────
@@ -51,6 +49,7 @@ pub struct AppState {
     pub folders: Vec<PathBuf>,
     pub selected_folder: Option<PathBuf>,
     pub tracks: Vec<Track>,
+    folder_cache: HashMap<PathBuf, Vec<Track>>,
 
     pub iced_theme: iced::Theme,
     loaded_theme_name: String,
@@ -58,8 +57,6 @@ pub struct AppState {
     pub strings: &'static crate::locale::Strings,
 
     audio: AudioPlayer,
-    db: Store,
-
     mpris_cmd_rx: tokio::sync::mpsc::UnboundedReceiver<MprisCommand>,
     mpris_update_tx: tokio::sync::mpsc::UnboundedSender<MprisUpdate>,
 }
@@ -68,12 +65,8 @@ impl AppState {
     fn new() -> (Self, Task<Message>) {
         let audio = AudioPlayer::spawn();
 
-        let db = Store::open(&config_dir(), &cache_dir())
-            .expect("Não foi possível abrir o store");
-
         let cfg = crate::config::get();
-        let music_dir = cfg.music_path();
-        let folders = music_subfolders(&music_dir);
+        let folders = music_subfolders(&cfg.music_path());
 
         let (mpris_cmd_tx, mpris_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
         let (mpris_update_tx, mpris_update_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -81,7 +74,6 @@ impl AppState {
 
         let loaded_theme_name = crate::ui::theme::read_current_theme_name();
         let iced_theme = build_iced_theme();
-        let strings = crate::locale::get();
 
         let state = AppState {
             playback_state: PlaybackState::Stopped,
@@ -95,28 +87,16 @@ impl AppState {
             folders,
             selected_folder: None,
             tracks: Vec::new(),
+            folder_cache: HashMap::new(),
             iced_theme,
             loaded_theme_name,
-            strings,
+            strings: crate::locale::get(),
             audio,
-            db,
             mpris_cmd_rx,
             mpris_update_tx,
         };
 
-        let task = Task::perform(
-            async move {
-                let scan_dir = crate::config::get().music_path();
-                if let Ok(mut store) = Store::open(&config_dir(), &cache_dir()) {
-                    scan_directory(&mut store, &scan_dir).unwrap_or(0)
-                } else {
-                    0
-                }
-            },
-            Message::LibraryScanned,
-        );
-
-        (state, task)
+        (state, Task::none())
     }
 
     fn send_mpris(&self, update: MprisUpdate) {
@@ -139,14 +119,30 @@ impl AppState {
         match message {
             Message::SelectFolder(path) => {
                 self.selected_folder = Some(path.clone());
-                self.tracks = self.db
-                    .tracks_in_folder(&path.to_string_lossy())
-                    .unwrap_or_default();
+                if let Some(cached) = self.folder_cache.get(&path) {
+                    self.tracks = cached.clone();
+                    return Task::none();
+                }
+                self.tracks.clear();
+                Task::perform(
+                    async move {
+                        let tracks = scan_folder(&path);
+                        (path, tracks)
+                    },
+                    |(path, tracks)| Message::FolderScanned(path, tracks),
+                )
+            }
+
+            Message::FolderScanned(path, tracks) => {
+                self.folder_cache.insert(path.clone(), tracks.clone());
+                if self.selected_folder.as_ref() == Some(&path) {
+                    self.tracks = tracks;
+                }
                 Task::none()
             }
 
             Message::PlayTrack(track) => {
-                let cover_data = self.db.load_cover_for_path(&track.path.to_string_lossy());
+                let cover_data = load_cover(&track.path);
                 let track = Track { cover_data, ..track };
                 self.audio.send(AudioCommand::Play(track.path.clone()));
                 self.audio.send(AudioCommand::SetVolume(self.volume));
@@ -173,7 +169,7 @@ impl AppState {
                     PlaybackState::Stopped => {
                         if let Some(first) = self.tracks.first().cloned() {
                             self.queue = self.tracks.clone();
-                            let cover_data = self.db.load_cover_for_path(&first.path.to_string_lossy());
+                            let cover_data = load_cover(&first.path);
                             let first = Track { cover_data, ..first };
                             self.audio.send(AudioCommand::Play(first.path.clone()));
                             self.current_track = Some(first);
@@ -186,7 +182,7 @@ impl AppState {
                 Task::none()
             }
 
-            Message::NextTrack => { self.advance_track(1); Task::none() }
+            Message::NextTrack     => { self.advance_track(1);  Task::none() }
             Message::PreviousTrack => { self.advance_track(-1); Task::none() }
 
             Message::Seek(dur) => {
@@ -208,7 +204,7 @@ impl AppState {
 
             Message::VolumeChanged(v) => {
                 self.volume = v;
-                self.audio.send(AudioCommand::SetVolume(self.volume));
+                self.audio.send(AudioCommand::SetVolume(v));
                 self.send_mpris(MprisUpdate::Volume(v as f64));
                 Task::none()
             }
@@ -296,7 +292,7 @@ impl AppState {
                                 }
                             }
                         }
-                        MprisCommand::Next => { self.advance_track(1); }
+                        MprisCommand::Next     => { self.advance_track(1);  }
                         MprisCommand::Previous => { self.advance_track(-1); }
                         MprisCommand::Stop => {
                             self.audio.send(AudioCommand::Stop);
@@ -319,25 +315,18 @@ impl AppState {
                 }
                 Task::none()
             }
-
-            Message::LibraryScanned(count) => {
-                eprintln!("Biblioteca: {count} faixas indexadas");
-                self.db.reload_library().ok();
-                self.folders = music_subfolders(&crate::config::get().music_path());
-                Task::none()
-            }
         }
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let header = self.header_view();
-        let player_panel = views::player::view(self);
-        let content = views::library::view(self);
-
-        let main = column![header, player_panel, content]
-            .spacing(0)
-            .width(Length::Fill)
-            .height(Length::Fill);
+        let main = column![
+            self.header_view(),
+            views::player::view(self),
+            views::library::view(self),
+        ]
+        .spacing(0)
+        .width(Length::Fill)
+        .height(Length::Fill);
 
         container(main)
             .style(|_: &Theme| iced::widget::container::Style {
@@ -378,25 +367,24 @@ impl AppState {
     }
 
     fn header_view(&self) -> Element<'_, Message> {
-        let nav = row![
-            text(crate::ui::icons::ICON_MUSIC)
-                .font(crate::ui::icons::NERD_FONT_MONO)
-                .color(theme::accent())
-                .size(16),
-            Space::with_width(6),
-            text("lavanda")
-                .color(theme::accent())
-                .size(16)
-                .font(crate::ui::icons::UI_FONT_BOLD),
-        ]
-        .align_y(Alignment::Center)
-        .spacing(0);
-
-        container(nav)
-            .style(theme::header)
-            .width(Length::Fill)
-            .padding([0, 16])
-            .into()
+        container(
+            row![
+                text(crate::ui::icons::ICON_MUSIC)
+                    .font(crate::ui::icons::NERD_FONT_MONO)
+                    .color(theme::accent())
+                    .size(16),
+                Space::with_width(6),
+                text("lavanda")
+                    .color(theme::accent())
+                    .size(16)
+                    .font(crate::ui::icons::UI_FONT_BOLD),
+            ]
+            .align_y(Alignment::Center),
+        )
+        .style(theme::header)
+        .width(Length::Fill)
+        .padding([0, 16])
+        .into()
     }
 
     fn advance_track(&mut self, delta: i32) {
@@ -409,9 +397,7 @@ impl AppState {
             let current_idx = self.current_track.as_ref()
                 .and_then(|ct| self.queue.iter().position(|t| t.id == ct.id));
             let len = self.queue.len();
-            if len == 1 {
-                0
-            } else {
+            if len == 1 { 0 } else {
                 let mut rng = rand::thread_rng();
                 let mut idx = rng.gen_range(0..len);
                 if let Some(cur) = current_idx {
@@ -432,7 +418,7 @@ impl AppState {
         };
 
         if let Some(track) = self.queue.get(next_idx).cloned() {
-            let cover_data = self.db.load_cover_for_path(&track.path.to_string_lossy());
+            let cover_data = load_cover(&track.path);
             let track = Track { cover_data, ..track };
             self.audio.send(AudioCommand::Play(track.path.clone()));
             self.current_track = Some(track);
@@ -455,18 +441,6 @@ fn music_subfolders(music_dir: &PathBuf) -> Vec<PathBuf> {
         .collect();
     folders.sort();
     folders
-}
-
-fn config_dir() -> PathBuf {
-    let xdg = std::env::var("XDG_CONFIG_HOME")
-        .unwrap_or_else(|_| format!("{}/.config", std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())));
-    PathBuf::from(xdg).join("lavanda")
-}
-
-fn cache_dir() -> PathBuf {
-    let xdg = std::env::var("XDG_CACHE_HOME")
-        .unwrap_or_else(|_| format!("{}/.cache", std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())));
-    PathBuf::from(xdg).join("lavanda")
 }
 
 fn build_iced_theme() -> Theme {
