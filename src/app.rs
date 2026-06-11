@@ -98,7 +98,9 @@ impl AppState {
         let db_path = data_dir.join("lavanda.db");
         let db = Database::open(&db_path).expect("Não foi possível abrir o banco de dados");
 
-        let folders = music_subfolders(&home_music_dir());
+        let cfg = crate::config::get();
+        let music_dir = cfg.music_path();
+        let folders = music_subfolders(&music_dir);
         let playlists = db.all_playlists().unwrap_or_default();
 
         let (mpris_cmd_tx, mpris_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -117,9 +119,9 @@ impl AppState {
             queue_index: 0,
             position: Duration::ZERO,
             duration: Duration::ZERO,
-            volume: 0.8,
-            shuffle: false,
-            repeat: false,
+            volume: cfg.volume.clamp(0.0, 1.0),
+            shuffle: cfg.shuffle,
+            repeat: cfg.repeat,
             folders,
             selected_folder: None,
             tracks: Vec::new(),
@@ -135,12 +137,12 @@ impl AppState {
             mpris_update_tx,
         };
 
-        let music_dir = home_music_dir();
         let task = Task::perform(
             async move {
+                let scan_dir = crate::config::get().music_path();
                 let db_path = dirs_next().join("lavanda.db");
                 if let Ok(db) = Database::open(&db_path) {
-                    scan_directory(&db, &music_dir).unwrap_or(0)
+                    scan_directory(&db, &scan_dir).unwrap_or(0)
                 } else {
                     0
                 }
@@ -369,7 +371,7 @@ impl AppState {
 
             Message::LibraryScanned(count) => {
                 eprintln!("Biblioteca: {count} faixas indexadas");
-                self.folders = music_subfolders(&home_music_dir());
+                self.folders = music_subfolders(&crate::config::get().music_path());
                 self.playlists = self.db.all_playlists().unwrap_or_default();
                 Task::none()
             }
@@ -424,17 +426,19 @@ impl AppState {
             iced::keyboard::on_key_press(|key, _mods| {
                 use iced::keyboard::Key;
                 use iced::keyboard::key::Named;
+                let seek = crate::config::get().seek_step as i64;
+                let vol  = crate::config::get().volume_step;
                 match key {
                     Key::Named(Named::Space)      => Some(Message::PlayPause),
-                    Key::Named(Named::ArrowRight) => Some(Message::SeekRelative(5)),
-                    Key::Named(Named::ArrowLeft)  => Some(Message::SeekRelative(-5)),
+                    Key::Named(Named::ArrowRight) => Some(Message::SeekRelative(seek)),
+                    Key::Named(Named::ArrowLeft)  => Some(Message::SeekRelative(-seek)),
                     Key::Character(ref c) => match c.as_str() {
                         "n" | "N" => Some(Message::NextTrack),
                         "p" | "P" => Some(Message::PreviousTrack),
                         "s" | "S" => Some(Message::ToggleShuffle),
                         "r" | "R" => Some(Message::ToggleRepeat),
-                        "+" | "=" => Some(Message::VolumeStep(0.05)),
-                        "-"       => Some(Message::VolumeStep(-0.05)),
+                        "+" | "=" => Some(Message::VolumeStep(vol)),
+                        "-"       => Some(Message::VolumeStep(-vol)),
                         _ => None,
                     },
                     _ => None,
@@ -537,11 +541,6 @@ fn music_subfolders(music_dir: &PathBuf) -> Vec<PathBuf> {
 fn dirs_next() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     PathBuf::from(home).join(".local/share/lavanda")
-}
-
-fn home_music_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home).join("Music")
 }
 
 fn build_iced_theme() -> Theme {

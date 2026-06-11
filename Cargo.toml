@@ -38,6 +38,10 @@ image = "0.25"
 thiserror = "2"
 anyhow = "1"
 
+# Configuração
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+
 # Traits async
 async-trait = "0.1"
 

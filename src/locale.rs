@@ -85,10 +85,16 @@ pub fn get() -> &'static Strings {
 }
 
 fn detect() -> &'static Strings {
-    let lang = std::env::var("LANG")
-        .or_else(|_| std::env::var("LANGUAGE"))
-        .or_else(|_| std::env::var("LC_ALL"))
-        .unwrap_or_default();
+    // Config tem precedência sobre $LANG
+    let override_lang = crate::config::get().language.clone();
+    let lang = if override_lang == "auto" || override_lang.is_empty() {
+        std::env::var("LANG")
+            .or_else(|_| std::env::var("LANGUAGE"))
+            .or_else(|_| std::env::var("LC_ALL"))
+            .unwrap_or_default()
+    } else {
+        override_lang
+    };
 
     // Pega só a parte antes do '.' (ex: "pt_BR.UTF-8" → "pt_BR")
     let lang = lang.split('.').next().unwrap_or("").to_lowercase();
