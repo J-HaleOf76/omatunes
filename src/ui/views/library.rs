@@ -1,4 +1,4 @@
-use iced::widget::{button, column, container, row, scrollable, text, Space};
+use iced::widget::{button, column, container, mouse_area, row, scrollable, text, Space};
 use iced::{Alignment, Element, Length};
 
 use crate::app::{AppState, Message};
@@ -8,7 +8,16 @@ pub fn view(state: &AppState) -> Element<'_, Message> {
     let sidebar = folder_sidebar(state);
     let track_list = track_list_view(state);
 
-    row![sidebar, track_list]
+    let drag_handle = mouse_area(
+        container(Space::new(Length::Fixed(4.0), Length::Fill))
+            .style(|_| iced::widget::container::Style {
+                background: Some(iced::Background::Color(crate::ui::theme::surface0())),
+                ..Default::default()
+            }),
+    )
+    .on_press(Message::SidebarDragStart);
+
+    row![sidebar, drag_handle, track_list]
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
@@ -60,7 +69,7 @@ fn folder_sidebar(state: &AppState) -> Element<'_, Message> {
         .padding(8),
     )
     .style(theme::sidebar)
-    .width(200)
+    .width(state.sidebar_width)
     .height(Length::Fill)
     .into()
 }

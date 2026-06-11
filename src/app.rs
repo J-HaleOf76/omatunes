@@ -30,6 +30,10 @@ pub enum Message {
     SeekRelative(i64),
     VolumeStep(f32),
 
+    SidebarDragStart,
+    SidebarDragMove(f32),
+    SidebarDragEnd,
+
     PollAudio,
     CheckTheme,
 }
@@ -50,6 +54,9 @@ pub struct AppState {
     pub selected_folder: Option<PathBuf>,
     pub tracks: Vec<Track>,
     folder_cache: HashMap<PathBuf, Vec<Track>>,
+
+    pub sidebar_width: f32,
+    dragging_sidebar: bool,
 
     pub iced_theme: iced::Theme,
     loaded_theme_name: String,
@@ -88,6 +95,8 @@ impl AppState {
             selected_folder: None,
             tracks: Vec::new(),
             folder_cache: HashMap::new(),
+            sidebar_width: load_sidebar_width(),
+            dragging_sidebar: false,
             iced_theme,
             loaded_theme_name,
             strings: crate::locale::get(),
@@ -230,6 +239,22 @@ impl AppState {
                 Task::none()
             }
 
+            Message::SidebarDragStart => {
+                self.dragging_sidebar = true;
+                Task::none()
+            }
+
+            Message::SidebarDragMove(x) => {
+                self.sidebar_width = x.clamp(120.0, 400.0);
+                Task::none()
+            }
+
+            Message::SidebarDragEnd => {
+                self.dragging_sidebar = false;
+                save_sidebar_width(self.sidebar_width);
+                Task::none()
+            }
+
             Message::PollAudio => {
                 while let Ok(event) = self.audio.event_rx.try_recv() {
                     match event {
@@ -339,7 +364,7 @@ impl AppState {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        Subscription::batch([
+        let base = Subscription::batch([
             iced::time::every(Duration::from_millis(100)).map(|_| Message::PollAudio),
             iced::time::every(Duration::from_secs(3)).map(|_| Message::CheckTheme),
             iced::keyboard::on_key_press(|key, _mods| {
@@ -363,7 +388,27 @@ impl AppState {
                     _ => None,
                 }
             }),
-        ])
+        ]);
+
+        if self.dragging_sidebar {
+            Subscription::batch([
+                base,
+                iced::event::listen_with(|event, _, _| {
+                    use iced::mouse;
+                    match event {
+                        iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                            Some(Message::SidebarDragMove(position.x))
+                        }
+                        iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                            Some(Message::SidebarDragEnd)
+                        }
+                        _ => None,
+                    }
+                }),
+            ])
+        } else {
+            base
+        }
     }
 
     fn header_view(&self) -> Element<'_, Message> {
@@ -441,6 +486,27 @@ fn music_subfolders(music_dir: &PathBuf) -> Vec<PathBuf> {
         .collect();
     folders.sort();
     folders
+}
+
+fn sidebar_width_path() -> PathBuf {
+    let xdg = std::env::var("XDG_CONFIG_HOME")
+        .unwrap_or_else(|_| format!("{}/.config", std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())));
+    PathBuf::from(xdg).join("lavanda").join("sidebar_width")
+}
+
+fn load_sidebar_width() -> f32 {
+    std::fs::read_to_string(sidebar_width_path())
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(200.0)
+}
+
+fn save_sidebar_width(width: f32) {
+    let path = sidebar_width_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).ok();
+    }
+    std::fs::write(path, width.to_string()).ok();
 }
 
 fn build_iced_theme() -> Theme {
