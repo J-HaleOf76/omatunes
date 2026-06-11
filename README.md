@@ -124,6 +124,31 @@ Style the module via CSS classes — avoid hardcoded Pango colors in `format`:
 
 ---
 
+## Keybindings
+
+These work when the lavanda window is focused.
+
+| Key | Action |
+|---|---|
+| `Space` | play / pause |
+| `→` / `←` | seek +5s / −5s |
+| `n` / `p` | next / previous track |
+| `s` | toggle shuffle |
+| `r` | toggle repeat |
+| `+` or `=` | volume +5% |
+| `-` | volume −5% |
+
+For system-wide controls (lavanda running in background), wire `playerctl` to your compositor. Example for Hyprland:
+
+```ini
+# hyprland.conf
+bind = SUPER, F5, exec, playerctl play-pause
+bind = SUPER, F6, exec, playerctl previous
+bind = SUPER, F7, exec, playerctl next
+```
+
+---
+
 ## playerctl
 
 ```bash
