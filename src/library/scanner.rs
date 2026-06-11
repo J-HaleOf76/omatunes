@@ -7,18 +7,15 @@ use lofty::prelude::*;
 use lofty::probe::Probe;
 use walkdir::WalkDir;
 
-use super::db::Database;
+use super::store::Store;
 
 const AUDIO_EXTENSIONS: &[&str] = &["mp3", "flac", "ogg", "opus", "wav", "aac", "m4a", "wma", "aiff"];
 
-/// Indexa um único arquivo de áudio no banco. Retorna `true` se foi inserido/atualizado,
-/// `false` se a extensão não é suportada. Erros de leitura de tag são impressos e retornam `false`.
-pub fn scan_file(db: &Database, path: &Path) -> Result<bool> {
-    let ext = path
-        .extension()
+/// Indexa um único arquivo de áudio. Persiste library.json ao terminar.
+pub fn scan_file(store: &mut Store, path: &Path) -> Result<bool> {
+    let ext = path.extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_lowercase());
-
     let Some(ext) = ext else { return Ok(false) };
     if !AUDIO_EXTENSIONS.contains(&ext.as_str()) {
         return Ok(false);
@@ -26,41 +23,30 @@ pub fn scan_file(db: &Database, path: &Path) -> Result<bool> {
 
     let path_str = path.to_string_lossy().to_string();
 
-    let mtime = path
-        .metadata()
-        .ok()
+    let mtime = path.metadata().ok()
         .and_then(|m| m.modified().ok())
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
-    if db.track_mtime(&path_str) == Some(mtime) {
+    if store.track_mtime(&path_str) == Some(mtime) {
         return Ok(true);
     }
 
     match read_tags(path) {
         Ok(info) => {
-            let artist_id = db.upsert_artist(&info.artist)?;
-            let album_artist_id = db.upsert_artist(
-                if info.album_artist.is_empty() { &info.artist } else { &info.album_artist },
-            )?;
-            let album_id = db.upsert_album(
-                &info.album,
-                album_artist_id,
-                info.year,
-                info.cover.as_deref(),
-            )?;
-            db.upsert_track(
+            store.upsert_track(
                 &path_str,
                 &info.title,
-                artist_id,
-                album_id,
+                &info.artist,
+                &info.album,
                 &info.album_artist,
                 info.track_number,
                 info.duration_ms,
                 mtime,
                 info.cover.as_deref(),
             )?;
+            store.save_library()?;
             Ok(true)
         }
         Err(e) => {
@@ -70,7 +56,7 @@ pub fn scan_file(db: &Database, path: &Path) -> Result<bool> {
     }
 }
 
-pub fn scan_directory(db: &Database, root: &Path) -> Result<usize> {
+pub fn scan_directory(store: &mut Store, root: &Path) -> Result<usize> {
     let mut count = 0;
     let mut seen: HashSet<String> = HashSet::new();
 
@@ -82,11 +68,9 @@ pub fn scan_directory(db: &Database, root: &Path) -> Result<usize> {
     {
         let path = entry.path();
 
-        let ext = path
-            .extension()
+        let ext = path.extension()
             .and_then(|e| e.to_str())
             .map(|e| e.to_lowercase());
-
         let Some(ext) = ext else { continue };
         if !AUDIO_EXTENSIONS.contains(&ext.as_str()) {
             continue;
@@ -95,90 +79,59 @@ pub fn scan_directory(db: &Database, root: &Path) -> Result<usize> {
         let path_str = path.to_string_lossy().to_string();
         seen.insert(path_str.clone());
 
-        let mtime = entry
-            .metadata()
-            .ok()
+        let mtime = entry.metadata().ok()
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        if db.track_mtime(&path_str) == Some(mtime) {
+        if store.track_mtime(&path_str) == Some(mtime) {
             continue;
         }
 
         match read_tags(path) {
             Ok(info) => {
-                let artist_id = db.upsert_artist(&info.artist)?;
-                let album_artist_id = db.upsert_artist(
-                    if info.album_artist.is_empty() { &info.artist } else { &info.album_artist }
-                )?;
-                let album_id = db.upsert_album(
-                    &info.album,
-                    album_artist_id,
-                    info.year,
-                    info.cover.as_deref(),
-                )?;
-
-                db.upsert_track(
+                store.upsert_track(
                     &path_str,
                     &info.title,
-                    artist_id,
-                    album_id,
+                    &info.artist,
+                    &info.album,
                     &info.album_artist,
                     info.track_number,
                     info.duration_ms,
                     mtime,
                     info.cover.as_deref(),
                 )?;
-
                 count += 1;
             }
-            Err(e) => {
-                eprintln!("Erro ao ler tags de {path_str}: {e}");
-            }
+            Err(e) => eprintln!("Erro ao ler tags de {path_str}: {e}"),
         }
     }
 
-    // Remove do banco qualquer faixa sob `root` que não existe mais no disco.
-    let removed = db.remove_missing_tracks(root, &seen)?;
+    let removed = store.remove_missing_tracks(root, &seen)?;
     if removed > 0 {
-        eprintln!("Scanner: {removed} faixa(s) removida(s) do banco (arquivos não encontrados)");
+        eprintln!("Scanner: {removed} faixa(s) removida(s) (arquivos não encontrados)");
     }
 
+    store.save_library()?;
     Ok(count)
 }
+
+// ── Leitura de tags ────────────────────────────────────────────────────────────
 
 struct TrackInfo {
     title: String,
     artist: String,
     album_artist: String,
     album: String,
-    year: Option<u32>,
     track_number: Option<u32>,
     duration_ms: u64,
     cover: Option<Vec<u8>>,
 }
 
-const COVER_FILENAMES: &[&str] = &["cover.jpg", "cover.png", "cover.webp", "folder.jpg", "folder.png"];
-
-fn cover_from_folder(path: &Path) -> Option<Vec<u8>> {
-    let dir = path.parent()?;
-    for name in COVER_FILENAMES {
-        let candidate = dir.join(name);
-        if let Ok(data) = std::fs::read(&candidate) {
-            return Some(data);
-        }
-    }
-    None
-}
-
 fn read_tags(path: &Path) -> Result<TrackInfo> {
     let tagged = Probe::open(path)?.read()?;
-
-    let properties = tagged.properties();
-    let duration_ms = properties.duration().as_millis() as u64;
-
+    let duration_ms = tagged.properties().duration().as_millis() as u64;
     let tags = tagged.primary_tag();
 
     let title = tags
@@ -191,13 +144,14 @@ fn read_tags(path: &Path) -> Result<TrackInfo> {
                 .to_string()
         });
 
-    let folder_album = path.parent()
+    let folder_artist = path.parent()
+        .and_then(|p| p.parent())
         .and_then(|p| p.file_name())
         .and_then(|n| n.to_str())
         .unwrap_or(crate::locale::get().unknown)
         .to_string();
-    let folder_artist = path.parent()
-        .and_then(|p| p.parent())
+
+    let folder_album = path.parent()
         .and_then(|p| p.file_name())
         .and_then(|n| n.to_str())
         .unwrap_or(crate::locale::get().unknown)
@@ -206,26 +160,43 @@ fn read_tags(path: &Path) -> Result<TrackInfo> {
     let artist = tags
         .and_then(|t| t.artist())
         .map(|s| s.to_string())
-        .unwrap_or(folder_artist.clone());
+        .unwrap_or_else(|| folder_artist.clone());
 
     let album_artist = tags
         .and_then(|t| t.get_string(&lofty::tag::ItemKey::AlbumArtist))
         .map(|s| s.to_string())
-        .unwrap_or(folder_artist);
+        .unwrap_or_else(|| folder_artist);
 
     let album = tags
         .and_then(|t| t.album())
         .map(|s| s.to_string())
         .unwrap_or(folder_album);
 
-    let year = tags.and_then(|t| t.year());
     let track_number = tags.and_then(|t| t.track());
 
-    let cover = tags.and_then(|t| {
-        t.pictures().iter().find(|p| {
-            matches!(p.pic_type(), lofty::picture::PictureType::CoverFront | lofty::picture::PictureType::Other)
-        }).map(|p| p.data().to_vec())
-    }).or_else(|| cover_from_folder(path));
+    let cover = tags
+        .and_then(|t| {
+            t.pictures().iter().find(|p| {
+                matches!(
+                    p.pic_type(),
+                    lofty::picture::PictureType::CoverFront | lofty::picture::PictureType::Other
+                )
+            })
+            .map(|p| p.data().to_vec())
+        })
+        .or_else(|| cover_from_folder(path));
 
-    Ok(TrackInfo { title, artist, album_artist, album, year, track_number, duration_ms, cover })
+    Ok(TrackInfo { title, artist, album_artist, album, track_number, duration_ms, cover })
+}
+
+const COVER_FILENAMES: &[&str] = &["cover.jpg", "cover.png", "cover.webp", "folder.jpg", "folder.png"];
+
+fn cover_from_folder(path: &Path) -> Option<Vec<u8>> {
+    let dir = path.parent()?;
+    for name in COVER_FILENAMES {
+        if let Ok(data) = std::fs::read(dir.join(name)) {
+            return Some(data);
+        }
+    }
+    None
 }

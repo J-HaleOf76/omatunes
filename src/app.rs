@@ -8,7 +8,7 @@ use mpris_server::{LoopStatus, PlaybackStatus};
 use crate::audio::{AudioCommand, AudioEvent, AudioPlayer, MprisCommand, MprisUpdate, PlaybackState};
 use crate::audio::mpris;
 use crate::library::models::{Playlist, Track};
-use crate::library::{scan_directory, Database};
+use crate::library::{scan_directory, scan_file, Store};
 use crate::ui::{theme, views};
 
 // ── Mensagens ─────────────────────────────────────────────────────────────────
@@ -88,7 +88,7 @@ pub struct AppState {
     pub strings: &'static crate::locale::Strings,
 
     audio: AudioPlayer,
-    db: Database,
+    db: Store,
 
     mpris_cmd_rx: tokio::sync::mpsc::UnboundedReceiver<MprisCommand>,
     mpris_update_tx: tokio::sync::mpsc::UnboundedSender<MprisUpdate>,
@@ -98,10 +98,8 @@ impl AppState {
     fn new() -> (Self, Task<Message>) {
         let audio = AudioPlayer::spawn();
 
-        let data_dir = dirs_next();
-        std::fs::create_dir_all(&data_dir).ok();
-        let db_path = data_dir.join("lavanda.db");
-        let db = Database::open(&db_path).expect("Não foi possível abrir o banco de dados");
+        let db = Store::open(&config_dir(), &cache_dir())
+            .expect("Não foi possível abrir o store");
 
         let cfg = crate::config::get();
         let music_dir = cfg.music_path();
@@ -146,9 +144,8 @@ impl AppState {
         let task = Task::perform(
             async move {
                 let scan_dir = crate::config::get().music_path();
-                let db_path = dirs_next().join("lavanda.db");
-                if let Ok(db) = Database::open(&db_path) {
-                    scan_directory(&db, &scan_dir).unwrap_or(0)
+                if let Ok(mut store) = Store::open(&config_dir(), &cache_dir()) {
+                    scan_directory(&mut store, &scan_dir).unwrap_or(0)
                 } else {
                     0
                 }
@@ -197,6 +194,8 @@ impl AppState {
             }
 
             Message::PlayTrack(track) => {
+                let cover_data = self.db.load_cover_for_path(&track.path.to_string_lossy());
+                let track = Track { cover_data, ..track };
                 self.audio.send(AudioCommand::Play(track.path.clone()));
                 self.audio.send(AudioCommand::SetVolume(self.volume));
                 self.queue = if self.tab == Tab::Playlists {
@@ -226,6 +225,8 @@ impl AppState {
                     PlaybackState::Stopped => {
                         if let Some(first) = self.tracks.first().cloned() {
                             self.queue = self.tracks.clone();
+                            let cover_data = self.db.load_cover_for_path(&first.path.to_string_lossy());
+                            let first = Track { cover_data, ..first };
                             self.audio.send(AudioCommand::Play(first.path.clone()));
                             self.current_track = Some(first);
                             self.playback_state = PlaybackState::Playing;
@@ -383,6 +384,7 @@ impl AppState {
 
             Message::LibraryScanned(count) => {
                 eprintln!("Biblioteca: {count} faixas indexadas");
+                self.db.reload_library().ok();
                 self.folders = music_subfolders(&crate::config::get().music_path());
                 self.playlists = self.db.all_playlists().unwrap_or_default();
                 Task::none()
@@ -413,7 +415,7 @@ impl AppState {
                     for path in &paths {
                         let path_str = path.to_string_lossy();
                         let id = self.db.track_id_by_path(&path_str).or_else(|| {
-                            crate::library::scan_file(&self.db, path).ok()?;
+                            scan_file(&mut self.db, path).ok()?;
                             self.db.track_id_by_path(&path_str)
                         });
                         if let Some(id) = id {
@@ -575,6 +577,8 @@ impl AppState {
         };
 
         if let Some(track) = self.queue.get(next_idx).cloned() {
+            let cover_data = self.db.load_cover_for_path(&track.path.to_string_lossy());
+            let track = Track { cover_data, ..track };
             self.audio.send(AudioCommand::Play(track.path.clone()));
             self.current_track = Some(track);
             self.playback_state = PlaybackState::Playing;
@@ -596,9 +600,16 @@ fn music_subfolders(music_dir: &PathBuf) -> Vec<PathBuf> {
     folders
 }
 
-fn dirs_next() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home).join(".local/share/lavanda")
+fn config_dir() -> PathBuf {
+    let xdg = std::env::var("XDG_CONFIG_HOME")
+        .unwrap_or_else(|_| format!("{}/.config", std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())));
+    PathBuf::from(xdg).join("lavanda")
+}
+
+fn cache_dir() -> PathBuf {
+    let xdg = std::env::var("XDG_CACHE_HOME")
+        .unwrap_or_else(|_| format!("{}/.cache", std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())));
+    PathBuf::from(xdg).join("lavanda")
 }
 
 /// Lê o clipboard do Wayland via `wl-paste` e retorna os caminhos de arquivo.
