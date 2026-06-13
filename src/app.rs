@@ -1995,27 +1995,15 @@ impl AppState {
             .width(Length::Fill)
             .height(Length::Fill);
 
-        let current_view: Element<'_, Message> = if let Some(ref editor_state) = self.show_tag_editor {
-            stack![
-                app_container,
-                crate::ui::components::tag_editor::view(editor_state)
-            ]
-            .into()
+        let mut view_stack = stack![app_container];
+
+        if let Some(ref editor_state) = self.show_tag_editor {
+            view_stack = view_stack.push(crate::ui::components::tag_editor::view(editor_state));
         } else if let Some(ref playlist_dialog_state) = self.playlist_dialog {
-            stack![
-                app_container,
-                crate::ui::components::playlist_dialog::view(playlist_dialog_state)
-            ]
-            .into()
+            view_stack = view_stack.push(crate::ui::components::playlist_dialog::view(playlist_dialog_state));
         } else if self.show_shortcuts {
-            stack![
-                app_container,
-                self.shortcuts_modal_view()
-            ]
-            .into()
-        } else {
-            app_container.into()
-        };
+            view_stack = view_stack.push(self.shortcuts_modal_view());
+        }
 
         if let Some(ref target) = self.show_context_menu {
             let custom_playlists = crate::db::get(|db| db.playlists.keys().cloned().collect::<Vec<String>>());
@@ -2244,10 +2232,10 @@ impl AppState {
                     ..Default::default()
                 });
 
-            stack![current_view, full_overlay].into()
-        } else {
-            current_view
+            view_stack = view_stack.push(full_overlay);
         }
+
+        view_stack.into()
     }
 
     fn shortcuts_modal_view(&self) -> Element<'_, Message> {
