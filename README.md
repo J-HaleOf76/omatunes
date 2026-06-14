@@ -90,14 +90,14 @@ To connect clicks, add custom commands to the module configuration in `~/.config
 
 ```jsonc
 "custom/omatunes": {
-    "exec": "/home/davepople/.local/bin/omatunes_scripts/omatunes_text.py",
+    "exec": "~/.local/bin/omatunes_scripts/omatunes_text.py",
     "return-type": "json",
     "format": "{text}",
-    "on-click": "/home/davepople/.local/bin/omatunes_scripts/omatunes_text.py --click left",
-    "on-click-right": "/home/davepople/.local/bin/omatunes_scripts/omatunes_text.py --click right",
-    "on-click-middle": "/home/davepople/.local/bin/omatunes_scripts/omatunes_text.py --click middle",
-    "on-scroll-up": "/home/davepople/.local/bin/omatunes_scripts/omatunes_volume.sh up",
-    "on-scroll-down": "/home/davepople/.local/bin/omatunes_scripts/omatunes_volume.sh down",
+    "on-click": "~/.local/bin/omatunes_scripts/omatunes_text.py --click left",
+    "on-click-right": "~/.local/bin/omatunes_scripts/omatunes_text.py --click right",
+    "on-click-middle": "~/.local/bin/omatunes_scripts/omatunes_text.py --click middle",
+    "on-scroll-up": "~/.local/bin/omatunes_scripts/omatunes_volume.sh up",
+    "on-scroll-down": "~/.local/bin/omatunes_scripts/omatunes_volume.sh down",
     "interval": 2
 }
 ```
